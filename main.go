@@ -11,8 +11,6 @@ import (
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/gorilla/mux"
-	_ "github.com/lib/pq"
-	_ "github.com/mattn/go-sqlite3"
 )
 
 var (
@@ -38,6 +36,30 @@ func WriteToJSON(w http.ResponseWriter, s int, v interface{}) error {
 		return e
 	}
 	return nil
+}
+
+func HandlePing(w http.ResponseWriter, r *http.Request) {
+	n := time.Now()
+
+	dbn := mux.Vars(r)["db"]
+
+	log.Printf("[DATABASE] %q\n", dbn)
+
+	db, e := sql.Open(*flagDriver, "root:@/"+dbn)
+	if e != nil {
+		log.Println(e)
+		fmt.Fprintln(w, e)
+		return
+	}
+	e = db.Ping()
+	if e != nil {
+		log.Println(e)
+		fmt.Fprintln(w, e)
+		return
+	}
+
+	fmt.Fprintf(w, "ping achieved")
+	log.Printf("(Ping done in %v)\n", time.Now().Sub(n))
 }
 
 func HandleQuery(w http.ResponseWriter, r *http.Request) {
@@ -118,7 +140,8 @@ func main() {
 	flag.Parse()
 
 	m := mux.NewRouter()
-	m.HandleFunc("/{db}/{query}", HandleQuery).Methods("POST")
+	m.HandleFunc("/api/{db}/{query}", HandleQuery).Methods("POST")
+	m.HandleFunc("/ping/{db}", HandlePing).Methods("GET")
 
 	log.Fatal(http.ListenAndServe(":6033", m))
 }
