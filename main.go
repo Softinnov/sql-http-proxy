@@ -15,6 +15,8 @@ import (
 
 var (
 	flagDriver = flag.String("driver", "mysql", "driver to use")
+
+	databases = map[string]*sql.DB{}
 )
 
 type QueryResult struct {
@@ -39,6 +41,29 @@ func WriteToJSON(w http.ResponseWriter, s int, v interface{}) error {
 	return nil
 }
 
+func open(dbn string) (*sql.DB, int, error) {
+
+	for k, v := range databases {
+		if k == dbn {
+			log.Printf("Used cache for database %q", dbn)
+			return v, http.StatusOK, nil
+		}
+	}
+
+	db, e := sql.Open(*flagDriver, "root:@/"+dbn)
+	if e != nil {
+		return nil, http.StatusInternalServerError, e
+	}
+	e = db.Ping()
+	if e != nil {
+		return nil, http.StatusBadRequest, e
+	}
+	databases[dbn] = db
+	log.Printf("Stored database %q", dbn)
+
+	return db, http.StatusOK, nil
+}
+
 func HandlePing(w http.ResponseWriter, r *http.Request) {
 	n := time.Now()
 
@@ -46,15 +71,17 @@ func HandlePing(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[DATABASE] %q\n", dbn)
 
-	db, e := sql.Open(*flagDriver, "root:@/"+dbn)
+	db, s, e := open(dbn)
 	if e != nil {
 		log.Println(e)
+		w.WriteHeader(s)
 		fmt.Fprintln(w, e)
 		return
 	}
 	e = db.Ping()
 	if e != nil {
 		log.Println(e)
+		w.WriteHeader(http.StatusBadRequest)
 		fmt.Fprintln(w, e)
 		return
 	}
@@ -63,136 +90,10 @@ func HandlePing(w http.ResponseWriter, r *http.Request) {
 	log.Printf("(Ping done in %v)\n", time.Now().Sub(n))
 }
 
-func HandleQuery(w http.ResponseWriter, r *http.Request) {
-	qr := &QueryResult{}
-
-	n := time.Now()
-
-	dbn := mux.Vars(r)["db"]
-	query := mux.Vars(r)["query"]
-
-	log.Printf("[DATABASE] %q [QUERY] %q\n", dbn, query)
-
-	s := qr.fetchQuery(dbn, query)
-	e := WriteToJSON(w, s, qr)
-	if e != nil {
-		log.Println(e)
-	}
-	log.Printf("(Query rendered in %v)\n", time.Now().Sub(n))
-}
-
-func HandleExec(w http.ResponseWriter, r *http.Request) {
-	qr := &QueryResult{}
-
-	n := time.Now()
-
-	dbn := mux.Vars(r)["db"]
-	query := mux.Vars(r)["query"]
-
-	log.Printf("[DATABASE] %q [QUERY] %q\n", dbn, query)
-
-	s := qr.fetchExec(dbn, query)
-	e := WriteToJSON(w, s, qr)
-	if e != nil {
-		log.Println(e)
-	}
-	log.Printf("(Exec rendered in %v)\n", time.Now().Sub(n))
-}
-
-func (qr *QueryResult) fetchExec(dbn string, query string) int {
-	db, e := sql.Open(*flagDriver, "root:@/"+dbn)
-	if e != nil {
-		log.Fatal(e)
-	}
-	e = db.Ping()
-	if e != nil {
-		log.Fatal(e)
-	}
-	rs, e := db.Exec(query)
-	if e != nil {
-		log.Println(e)
-		qr.Error = fmt.Sprintf("%s", e)
-		return http.StatusBadRequest
-	}
-
-	li, e := rs.LastInsertId()
-	if e != nil {
-		log.Println(e)
-		qr.Error = fmt.Sprintf("%s", e)
-		return http.StatusBadRequest
-	}
-	ra, e := rs.RowsAffected()
-	if e != nil {
-		log.Println(e)
-		qr.Error = fmt.Sprintf("%s", e)
-		return http.StatusBadRequest
-	}
-
-	qr.Infos = map[string]int64{
-		"lastInsertId": li,
-		"rowsAffected": ra,
-	}
-	return http.StatusOK
-}
-
-func (qr *QueryResult) fetchQuery(dbn string, query string) int {
-	db, e := sql.Open(*flagDriver, "root:@/"+dbn)
-	if e != nil {
-		log.Fatal(e)
-	}
-	e = db.Ping()
-	if e != nil {
-		log.Fatal(e)
-	}
-	rs, e := db.Query(query)
-	if e != nil {
-		log.Println(e)
-		qr.Error = fmt.Sprintf("%s", e)
-		return http.StatusBadRequest
-	}
-	defer rs.Close()
-	cs, e := rs.Columns()
-	if e != nil {
-		log.Println(e)
-		qr.Error = fmt.Sprintf("%s", e)
-		return http.StatusInternalServerError
-	}
-	var res [][]*string
-	tmpr := make([][]byte, len(cs))
-
-	tmpi := make([]interface{}, len(cs))
-	for i, _ := range tmpr {
-		tmpi[i] = &tmpr[i]
-	}
-	for rs.Next() {
-		raw := make([]*string, len(cs))
-		e = rs.Scan(tmpi...)
-		if e != nil {
-			log.Println(e)
-			qr.Error = fmt.Sprintf("%s", e)
-			return http.StatusInternalServerError
-		}
-
-		for i, v := range tmpr {
-			switch v {
-			case nil:
-				raw[i] = nil
-			default:
-				t := string(tmpr[i])
-				raw[i] = &t
-			}
-		}
-
-		res = append(res, raw)
-	}
-
-	qr.Data = res
-	qr.Columns = cs
-	return http.StatusOK
-}
-
 func main() {
 	flag.Parse()
+
+	databases = make(map[string]*sql.DB)
 
 	m := mux.NewRouter()
 	m.HandleFunc("/query/{db}/{query}", HandleQuery).Methods("POST")
