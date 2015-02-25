@@ -16,8 +16,14 @@ import (
 var (
 	flagDriver = flag.String("driver", "mysql", "driver to use")
 
-	databases = map[string]*sql.DB{}
+	databases = map[string]*DbInfo{}
 )
+
+type DbInfo struct {
+	Db       *sql.DB
+	User     string
+	Password string
+}
 
 type QueryResult struct {
 	Columns []string         `json:"columns,omitempty"`
@@ -41,37 +47,38 @@ func WriteToJSON(w http.ResponseWriter, s int, v interface{}) error {
 	return nil
 }
 
-func open(dbn string) (*sql.DB, int, error) {
+func open(dbn string, info *DbInfo) (*sql.DB, int, error) {
 
 	for k, v := range databases {
 		if k == dbn {
 			log.Printf("Used cache for database %q", dbn)
-			return v, http.StatusOK, nil
+			return v.Db, http.StatusOK, nil
 		}
 	}
 
-	db, e := sql.Open(*flagDriver, "root:@/"+dbn)
+	db, e := sql.Open(*flagDriver, info.User+":"+info.Password+"@/"+dbn)
+	info.Db = db
 	if e != nil {
 		return nil, http.StatusInternalServerError, e
 	}
-	e = db.Ping()
+	e = info.Db.Ping()
 	if e != nil {
 		return nil, http.StatusBadRequest, e
 	}
-	databases[dbn] = db
+	databases[dbn] = info
 	log.Printf("Stored database %q", dbn)
 
 	return db, http.StatusOK, nil
 }
 
-func HandlePing(w http.ResponseWriter, r *http.Request) {
+func HandlePing(w http.ResponseWriter, r *http.Request, info *DbInfo) {
 	n := time.Now()
 
 	dbn := mux.Vars(r)["db"]
 
 	log.Printf("[DATABASE] %q\n", dbn)
 
-	db, s, e := open(dbn)
+	db, s, e := open(dbn, info)
 	if e != nil {
 		log.Println(e)
 		w.WriteHeader(s)
@@ -90,15 +97,36 @@ func HandlePing(w http.ResponseWriter, r *http.Request) {
 	log.Printf("(Ping done in %v)\n", time.Now().Sub(n))
 }
 
+func auth(fn func(http.ResponseWriter, *http.Request, *DbInfo)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		u, p, ok := r.BasicAuth()
+		if !ok {
+			log.Println("Bad User:Password")
+			e := WriteToJSON(w, http.StatusUnauthorized, QueryResult{
+				Error: "Bad user password",
+			})
+			if e != nil {
+				log.Println(e)
+			}
+			return
+		}
+		info := DbInfo{
+			User:     u,
+			Password: p,
+		}
+		fn(w, r, &info)
+	}
+}
+
 func main() {
 	flag.Parse()
 
-	databases = make(map[string]*sql.DB)
+	databases = make(map[string]*DbInfo)
 
 	m := mux.NewRouter()
-	m.HandleFunc("/query/{db}/{query}", HandleQuery).Methods("POST")
-	m.HandleFunc("/exec/{db}/{query}", HandleExec).Methods("POST")
-	m.HandleFunc("/ping/{db}", HandlePing).Methods("GET")
+	m.HandleFunc("/query/{db}/{query}", auth(HandleQuery)).Methods("POST")
+	m.HandleFunc("/exec/{db}/{query}", auth(HandleExec)).Methods("POST")
+	m.HandleFunc("/ping/{db}", auth(HandlePing)).Methods("POST")
 
 	log.Fatal(http.ListenAndServe(":6033", m))
 }

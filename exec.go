@@ -10,7 +10,7 @@ import (
 	"github.com/gorilla/mux"
 )
 
-func HandleExec(w http.ResponseWriter, r *http.Request) {
+func HandleExec(w http.ResponseWriter, r *http.Request, info *DbInfo) {
 	qr := &QueryResult{}
 
 	n := time.Now()
@@ -20,7 +20,7 @@ func HandleExec(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[DATABASE] %q [QUERY] %q\n", dbn, query)
 
-	db, s, e := open(dbn)
+	db, s, e := open(dbn, info)
 	if e != nil {
 		log.Println(e)
 		w.WriteHeader(s)
