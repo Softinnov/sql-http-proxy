@@ -50,7 +50,7 @@ func WriteToJSON(w http.ResponseWriter, s int, v interface{}) error {
 func open(dbn string, info *DbInfo) (*sql.DB, int, error) {
 
 	for k, v := range databases {
-		if k == dbn {
+		if k == dbn && v.User == info.User && v.Password == info.Password {
 			log.Printf("Used cache for database %q", dbn)
 			return v.Db, http.StatusOK, nil
 		}
